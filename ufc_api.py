@@ -1000,6 +1000,36 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
         <div class="container">
             <h1>UFC API Analytics</h1>
 
+            <div class="table-container" style="margin-bottom: 20px; background: linear-gradient(135deg, rgba(0,212,255,0.1), rgba(123,44,191,0.1));">
+                <h3 class="section-title">📊 All Time Stats (Historical)</h3>
+                <div class="stats-grid" style="margin-bottom: 0;">
+                    <div class="stat-card" style="background: rgba(0,0,0,0.3);">
+                        <div class="stat-value">{analytics["total_requests"]:,}</div>
+                        <div class="stat-label">Total Requests</div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0,0,0,0.3);">
+                        <div class="stat-value">{len(analytics["ips"]):,}</div>
+                        <div class="stat-label">Unique IPs</div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0,0,0,0.3);">
+                        <div class="stat-value">{len(analytics["endpoints"])}</div>
+                        <div class="stat-label">Endpoints</div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0,0,0,0.3);">
+                        <div class="stat-value">{len(analytics["devices"])}</div>
+                        <div class="stat-label">Devices</div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0,0,0,0.3);">
+                        <div class="stat-value">{len(analytics["browsers"])}</div>
+                        <div class="stat-label">Browsers</div>
+                    </div>
+                    <div class="stat-card" style="background: rgba(0,0,0,0.3);">
+                        <div class="stat-value">{len(analytics["daily"])}</div>
+                        <div class="stat-label">Days Tracked</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="table-container" style="margin-bottom: 20px;">
                 <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
                     <div class="control-group">
@@ -1025,6 +1055,7 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
                 </div>
             </div>
 
+            <h3 class="section-title" style="margin-bottom: 15px;">📈 Filtered Stats</h3>
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-value" id="statRequests">0</div>
