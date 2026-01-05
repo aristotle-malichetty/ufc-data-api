@@ -1,0 +1,39 @@
+# Data files (stored on server, not in repo)
+ufc_data/
+
+# Scraper (private - only API is public)
+ufc_scraper.py
+requirements-scraper.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Deployment
+ufcapi.zip
+deploy/
+
+# Claude
+.claude/
+
+# Sample/test files
+sample_data_structure.json
+
+# Analytics data (contains IP addresses)
+analytics.json
