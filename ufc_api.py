@@ -813,6 +813,21 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
     # Get hourly data (last 24 hours)
     hourly = sorted(analytics["hourly"].items())[-24:]
 
+    # Calculate time-range stats
+    from datetime import timedelta
+    today = date.today()
+    last_7_days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+    last_30_days = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(30)]
+
+    requests_7_days = sum(analytics["daily"].get(d, 0) for d in last_7_days)
+    requests_30_days = sum(analytics["daily"].get(d, 0) for d in last_30_days)
+
+    # Calculate unique IPs for time ranges
+    unique_ips_today = len(set(
+        ip for ip, journeys in analytics.get("user_journeys", {}).items()
+        for j in journeys if j.get("timestamp", "").startswith(str(today))
+    )) or len(analytics["ips"])  # Fallback to total if no journey data
+
     # Get device/browser/OS data
     devices = sorted(analytics["devices"].items(), key=lambda x: x[1], reverse=True)
     browsers = sorted(analytics["browsers"].items(), key=lambda x: x[1], reverse=True)
@@ -984,7 +999,15 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
             <div class="stats-grid">
                 <div class="stat-card">
                     <div class="stat-value">{analytics["total_requests"]:,}</div>
-                    <div class="stat-label">Total Requests</div>
+                    <div class="stat-label">All Time</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{requests_30_days:,}</div>
+                    <div class="stat-label">Last 30 Days</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{requests_7_days:,}</div>
+                    <div class="stat-label">Last 7 Days</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-value">{analytics["requests_today"]:,}</div>
@@ -1005,6 +1028,26 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
                 <div class="stat-card">
                     <div class="stat-value">{len(analytics["browsers"])}</div>
                     <div class="stat-label">Browsers</div>
+                </div>
+            </div>
+
+            <div class="table-container" style="margin-bottom: 20px;">
+                <h3 class="section-title">📅 Custom Date Range</h3>
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <div class="control-group">
+                        <label>Start Date</label>
+                        <input type="date" id="startDate" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px;">
+                    </div>
+                    <div class="control-group">
+                        <label>End Date</label>
+                        <input type="date" id="endDate" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px;">
+                    </div>
+                    <button onclick="calculateCustomRange()" style="background: linear-gradient(135deg, #00d4ff, #7b2cbf); color: #fff; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: 600; margin-top: 20px;">Calculate</button>
+                    <div style="margin-top: 20px; margin-left: 20px;">
+                        <span style="color: #aaa;">Result: </span>
+                        <span id="customRangeResult" style="color: #00d4ff; font-size: 1.5rem; font-weight: 700;">-</span>
+                        <span style="color: #aaa;"> requests</span>
+                    </div>
                 </div>
             </div>
 
@@ -1157,6 +1200,40 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
             const colors = ['#00d4ff', '#7b2cbf', '#ff6b6b', '#4ecdc4', '#45b7d1', '#96c93d', '#f9ca24', '#f0932b', '#eb4d4b', '#6c5ce7'];
             const allDatasets = {all_datasets};
             const userJourneys = {user_journeys_json};
+            const dailyData = {json.dumps(dict(analytics["daily"]))};
+
+            // Set default dates
+            document.addEventListener('DOMContentLoaded', function() {{
+                const today = new Date();
+                const weekAgo = new Date(today);
+                weekAgo.setDate(weekAgo.getDate() - 7);
+                document.getElementById('endDate').value = today.toISOString().split('T')[0];
+                document.getElementById('startDate').value = weekAgo.toISOString().split('T')[0];
+            }});
+
+            function calculateCustomRange() {{
+                const startDate = document.getElementById('startDate').value;
+                const endDate = document.getElementById('endDate').value;
+
+                if (!startDate || !endDate) {{
+                    document.getElementById('customRangeResult').textContent = 'Select dates';
+                    return;
+                }}
+
+                let total = 0;
+                const start = new Date(startDate);
+                const end = new Date(endDate);
+
+                // Loop through each day in range
+                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {{
+                    const dateStr = d.toISOString().split('T')[0];
+                    if (dailyData[dateStr]) {{
+                        total += dailyData[dateStr];
+                    }}
+                }}
+
+                document.getElementById('customRangeResult').textContent = total.toLocaleString();
+            }}
 
             function showJourney() {{
                 const ip = document.getElementById('journeyIpSelect').value;
