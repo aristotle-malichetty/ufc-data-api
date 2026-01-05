@@ -208,18 +208,22 @@ def track_request(request: Request):
             referer = "Direct"
     analytics["referers"][referer] += 1
 
-    # Track user journey (IP -> list of actions with timestamps)
+    # Track user journey (IP -> list of actions with timestamps and full details)
     ip = get_remote_address(request)
     journey_entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "date": datetime.now().strftime("%Y-%m-%d"),
         "endpoint": request.url.path,
         "method": request.method,
-        "referer": referer
+        "referer": referer,
+        "device": ua_info["device"],
+        "browser": ua_info["browser"],
+        "os": ua_info["os"]
     }
     analytics["user_journeys"][ip].append(journey_entry)
-    # Keep only last 100 entries per IP to prevent unbounded growth
-    if len(analytics["user_journeys"][ip]) > 100:
-        analytics["user_journeys"][ip] = analytics["user_journeys"][ip][-100:]
+    # Keep only last 500 entries per IP to allow for date range analysis
+    if len(analytics["user_journeys"][ip]) > 500:
+        analytics["user_journeys"][ip] = analytics["user_journeys"][ip][-500:]
 
     # Save on every request for persistence
     save_analytics()
@@ -996,58 +1000,55 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
         <div class="container">
             <h1>UFC API Analytics</h1>
 
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="stat-value">{analytics["total_requests"]:,}</div>
-                    <div class="stat-label">All Time</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{requests_30_days:,}</div>
-                    <div class="stat-label">Last 30 Days</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{requests_7_days:,}</div>
-                    <div class="stat-label">Last 7 Days</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{analytics["requests_today"]:,}</div>
-                    <div class="stat-label">Today</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{len(analytics["ips"]):,}</div>
-                    <div class="stat-label">Unique IPs</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{len(analytics["endpoints"])}</div>
-                    <div class="stat-label">Endpoints</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{len(analytics["devices"])}</div>
-                    <div class="stat-label">Device Types</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">{len(analytics["browsers"])}</div>
-                    <div class="stat-label">Browsers</div>
+            <div class="table-container" style="margin-bottom: 20px;">
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <div class="control-group">
+                        <label>📅 Date Range</label>
+                        <select id="dateRangeSelect" onchange="onDateRangeChange()" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 10px 15px; border-radius: 5px; font-size: 1rem;">
+                            <option value="today">Today</option>
+                            <option value="7days">Last 7 Days</option>
+                            <option value="30days">Last 30 Days</option>
+                            <option value="custom">Custom Range</option>
+                        </select>
+                    </div>
+                    <div class="control-group" id="customDateInputs" style="display: none;">
+                        <label>From</label>
+                        <input type="date" id="startDate" onchange="applyDateFilter()" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px;">
+                    </div>
+                    <div class="control-group" id="customDateInputs2" style="display: none;">
+                        <label>To</label>
+                        <input type="date" id="endDate" onchange="applyDateFilter()" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px;">
+                    </div>
+                    <div style="margin-left: auto; color: #666; font-size: 0.9rem;">
+                        Showing: <span id="dateRangeLabel" style="color: #00d4ff;">Today</span>
+                    </div>
                 </div>
             </div>
 
-            <div class="table-container" style="margin-bottom: 20px;">
-                <h3 class="section-title">📅 Custom Date Range</h3>
-                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-                    <div class="control-group">
-                        <label>Start Date</label>
-                        <input type="date" id="startDate" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px;">
-                    </div>
-                    <div class="control-group">
-                        <label>End Date</label>
-                        <input type="date" id="endDate" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px;">
-                    </div>
-                    <button onclick="calculateCustomRange()" style="background: linear-gradient(135deg, #00d4ff, #7b2cbf); color: #fff; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: 600; margin-top: 20px;">Calculate</button>
-                    <div style="margin-top: 20px; margin-left: 20px;">
-                        <span style="color: #aaa;">Result: </span>
-                        <span id="customRangeResult" style="color: #00d4ff; font-size: 1.5rem; font-weight: 700;">-</span>
-                        <span style="color: #aaa;"> requests</span>
-                    </div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="statRequests">0</div>
+                    <div class="stat-label">Requests</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statUniqueIPs">0</div>
+                    <div class="stat-label">Unique IPs</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statEndpoints">0</div>
+                    <div class="stat-label">Endpoints Hit</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statDevices">0</div>
+                    <div class="stat-label">Device Types</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statBrowsers">0</div>
+                    <div class="stat-label">Browsers</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statOS">0</div>
+                    <div class="stat-label">OS Types</div>
                 </div>
             </div>
 
@@ -1202,38 +1203,172 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
             const userJourneys = {user_journeys_json};
             const dailyData = {json.dumps(dict(analytics["daily"]))};
 
-            // Set default dates
-            document.addEventListener('DOMContentLoaded', function() {{
-                const today = new Date();
-                const weekAgo = new Date(today);
-                weekAgo.setDate(weekAgo.getDate() - 7);
-                document.getElementById('endDate').value = today.toISOString().split('T')[0];
-                document.getElementById('startDate').value = weekAgo.toISOString().split('T')[0];
-            }});
-
-            function calculateCustomRange() {{
-                const startDate = document.getElementById('startDate').value;
-                const endDate = document.getElementById('endDate').value;
-
-                if (!startDate || !endDate) {{
-                    document.getElementById('customRangeResult').textContent = 'Select dates';
-                    return;
+            // Flatten all journeys into a single array with IP included
+            let allRequests = [];
+            for (const [ip, journeys] of Object.entries(userJourneys)) {{
+                for (const j of journeys) {{
+                    allRequests.push({{ ...j, ip: ip }});
                 }}
-
-                let total = 0;
-                const start = new Date(startDate);
-                const end = new Date(endDate);
-
-                // Loop through each day in range
-                for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {{
-                    const dateStr = d.toISOString().split('T')[0];
-                    if (dailyData[dateStr]) {{
-                        total += dailyData[dateStr];
-                    }}
-                }}
-
-                document.getElementById('customRangeResult').textContent = total.toLocaleString();
             }}
+
+            // Current filtered data
+            let filteredRequests = [];
+
+            // Get date string for N days ago
+            function getDateNDaysAgo(n) {{
+                const d = new Date();
+                d.setDate(d.getDate() - n);
+                return d.toISOString().split('T')[0];
+            }}
+
+            // Filter requests by date range
+            function filterByDateRange(startDate, endDate) {{
+                return allRequests.filter(r => {{
+                    const date = r.date || r.timestamp?.split(' ')[0];
+                    return date >= startDate && date <= endDate;
+                }});
+            }}
+
+            // Calculate stats from filtered requests
+            function calculateStats(requests) {{
+                const uniqueIPs = new Set(requests.map(r => r.ip));
+                const uniqueEndpoints = new Set(requests.map(r => r.endpoint));
+                const uniqueDevices = new Set(requests.map(r => r.device).filter(Boolean));
+                const uniqueBrowsers = new Set(requests.map(r => r.browser).filter(Boolean));
+                const uniqueOS = new Set(requests.map(r => r.os).filter(Boolean));
+
+                return {{
+                    requests: requests.length,
+                    uniqueIPs: uniqueIPs.size,
+                    endpoints: uniqueEndpoints.size,
+                    devices: uniqueDevices.size,
+                    browsers: uniqueBrowsers.size,
+                    os: uniqueOS.size
+                }};
+            }}
+
+            // Update stat cards
+            function updateStatCards(stats) {{
+                document.getElementById('statRequests').textContent = stats.requests.toLocaleString();
+                document.getElementById('statUniqueIPs').textContent = stats.uniqueIPs.toLocaleString();
+                document.getElementById('statEndpoints').textContent = stats.endpoints.toLocaleString();
+                document.getElementById('statDevices').textContent = stats.devices.toLocaleString();
+                document.getElementById('statBrowsers').textContent = stats.browsers.toLocaleString();
+                document.getElementById('statOS').textContent = stats.os.toLocaleString();
+            }}
+
+            // Get aggregated data for charts
+            function getChartData(requests) {{
+                const endpoints = {{}};
+                const ips = {{}};
+                const devices = {{}};
+                const browsers = {{}};
+                const osData = {{}};
+                const daily = {{}};
+
+                requests.forEach(r => {{
+                    endpoints[r.endpoint] = (endpoints[r.endpoint] || 0) + 1;
+                    ips[r.ip] = (ips[r.ip] || 0) + 1;
+                    if (r.device) devices[r.device] = (devices[r.device] || 0) + 1;
+                    if (r.browser) browsers[r.browser] = (browsers[r.browser] || 0) + 1;
+                    if (r.os) osData[r.os] = (osData[r.os] || 0) + 1;
+                    const date = r.date || r.timestamp?.split(' ')[0];
+                    if (date) daily[date] = (daily[date] || 0) + 1;
+                }});
+
+                return {{ endpoints, ips, devices, browsers, osData, daily }};
+            }}
+
+            // Update all charts with filtered data
+            function updateAllCharts(requests) {{
+                const data = getChartData(requests);
+
+                // Sort and limit data
+                const sortedEndpoints = Object.entries(data.endpoints).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                const sortedIPs = Object.entries(data.ips).sort((a, b) => b[1] - a[1]).slice(0, 10);
+                const sortedDaily = Object.entries(data.daily).sort((a, b) => a[0].localeCompare(b[0]));
+
+                // Update chart data
+                chartData.endpoints = {{ labels: sortedEndpoints.map(e => e[0]), data: sortedEndpoints.map(e => e[1]) }};
+                chartData.ips = {{ labels: sortedIPs.map(e => e[0].substring(0, 20)), data: sortedIPs.map(e => e[1]) }};
+                chartData.devices = {{ labels: Object.keys(data.devices), data: Object.values(data.devices) }};
+                chartData.browsers = {{ labels: Object.keys(data.browsers), data: Object.values(data.browsers) }};
+                chartData.os = {{ labels: Object.keys(data.osData), data: Object.values(data.osData) }};
+                chartData.daily = {{ labels: sortedDaily.map(e => e[0]), data: sortedDaily.map(e => e[1]) }};
+
+                // Recreate charts
+                createChart('daily', document.getElementById('dailyChartType')?.value || 'line', chartData.daily.labels, chartData.daily.data);
+                createChart('endpoints', document.getElementById('endpointsChartType')?.value || 'bar', chartData.endpoints.labels, chartData.endpoints.data, true);
+                createChart('ips', document.getElementById('ipsChartType')?.value || 'bar', chartData.ips.labels, chartData.ips.data);
+                createChart('devices', document.getElementById('devicesChartType')?.value || 'doughnut', chartData.devices.labels, chartData.devices.data);
+                createChart('browsers', document.getElementById('browsersChartType')?.value || 'doughnut', chartData.browsers.labels, chartData.browsers.data);
+                createChart('os', document.getElementById('osChartType')?.value || 'doughnut', chartData.os.labels, chartData.os.data);
+            }}
+
+            // Handle date range dropdown change
+            function onDateRangeChange() {{
+                const select = document.getElementById('dateRangeSelect');
+                const customInputs = document.getElementById('customDateInputs');
+                const customInputs2 = document.getElementById('customDateInputs2');
+                const label = document.getElementById('dateRangeLabel');
+
+                if (select.value === 'custom') {{
+                    customInputs.style.display = 'flex';
+                    customInputs2.style.display = 'flex';
+                    label.textContent = 'Custom Range';
+                }} else {{
+                    customInputs.style.display = 'none';
+                    customInputs2.style.display = 'none';
+                    applyDateFilter();
+                }}
+            }}
+
+            // Apply the date filter
+            function applyDateFilter() {{
+                const select = document.getElementById('dateRangeSelect');
+                const today = new Date().toISOString().split('T')[0];
+                let startDate, endDate, labelText;
+
+                switch (select.value) {{
+                    case 'today':
+                        startDate = endDate = today;
+                        labelText = 'Today';
+                        break;
+                    case '7days':
+                        startDate = getDateNDaysAgo(6);
+                        endDate = today;
+                        labelText = 'Last 7 Days';
+                        break;
+                    case '30days':
+                        startDate = getDateNDaysAgo(29);
+                        endDate = today;
+                        labelText = 'Last 30 Days';
+                        break;
+                    case 'custom':
+                        startDate = document.getElementById('startDate').value;
+                        endDate = document.getElementById('endDate').value;
+                        if (!startDate || !endDate) return;
+                        labelText = `${{startDate}} to ${{endDate}}`;
+                        break;
+                }}
+
+                document.getElementById('dateRangeLabel').textContent = labelText;
+
+                // Filter and update
+                filteredRequests = filterByDateRange(startDate, endDate);
+                const stats = calculateStats(filteredRequests);
+                updateStatCards(stats);
+                updateAllCharts(filteredRequests);
+            }}
+
+            // Initialize dates
+            document.addEventListener('DOMContentLoaded', function() {{
+                const today = new Date().toISOString().split('T')[0];
+                document.getElementById('endDate').value = today;
+                document.getElementById('startDate').value = today;
+                // Apply initial filter (today)
+                setTimeout(applyDateFilter, 100);
+            }});
 
             function showJourney() {{
                 const ip = document.getElementById('journeyIpSelect').value;
