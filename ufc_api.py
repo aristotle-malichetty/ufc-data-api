@@ -16,6 +16,8 @@ from typing import Optional
 from collections import defaultdict
 import json
 import os
+import httpx
+import asyncio
 from datetime import datetime, date
 
 # Load environment variables from .env file
@@ -31,6 +33,11 @@ RATE_LIMIT = "100/day;100/minute"
 
 # Analytics secret key (loaded from .env file)
 ANALYTICS_SECRET = os.getenv("ANALYTICS_SECRET")
+
+# Treblle configuration
+TREBLLE_API_KEY = os.getenv("TREBLLE_API_KEY")
+TREBLLE_SDK_TOKEN = os.getenv("TREBLLE_SDK_TOKEN")
+TREBLLE_API_URL = "https://rocknrolla.treblle.com"
 
 # Cache settings (5 minute TTL, max 1000 items)
 cache = TTLCache(maxsize=1000, ttl=300)
@@ -110,7 +117,8 @@ analytics = {
     "os": defaultdict(int),
     "referers": defaultdict(int),
     "methods": defaultdict(int),
-    "status_codes": defaultdict(int)
+    "status_codes": defaultdict(int),
+    "user_journeys": defaultdict(list)  # IP -> list of {timestamp, endpoint, method}
 }
 
 def load_analytics():
@@ -133,6 +141,7 @@ def load_analytics():
                 analytics["referers"] = defaultdict(int, data.get("referers", {}))
                 analytics["methods"] = defaultdict(int, data.get("methods", {}))
                 analytics["status_codes"] = defaultdict(int, data.get("status_codes", {}))
+                analytics["user_journeys"] = defaultdict(list, data.get("user_journeys", {}))
         except:
             pass
 
@@ -153,7 +162,8 @@ def save_analytics():
                 "os": dict(analytics["os"]),
                 "referers": dict(analytics["referers"]),
                 "methods": dict(analytics["methods"]),
-                "status_codes": dict(analytics["status_codes"])
+                "status_codes": dict(analytics["status_codes"]),
+                "user_journeys": dict(analytics["user_journeys"])
             }, f, indent=2)
     except:
         pass
@@ -197,6 +207,19 @@ def track_request(request: Request):
         except:
             referer = "Direct"
     analytics["referers"][referer] += 1
+
+    # Track user journey (IP -> list of actions with timestamps)
+    ip = get_remote_address(request)
+    journey_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "endpoint": request.url.path,
+        "method": request.method,
+        "referer": referer
+    }
+    analytics["user_journeys"][ip].append(journey_entry)
+    # Keep only last 100 entries per IP to prevent unbounded growth
+    if len(analytics["user_journeys"][ip]) > 100:
+        analytics["user_journeys"][ip] = analytics["user_journeys"][ip][-100:]
 
     # Save on every request for persistence
     save_analytics()
@@ -255,6 +278,113 @@ async def analytics_middleware(request: Request, call_next):
         track_request(request)
     response = await call_next(request)
     return response
+
+
+# Treblle middleware - sends API analytics to Treblle
+async def send_to_treblle(payload: dict):
+    """Send request data to Treblle in the background"""
+    if not TREBLLE_API_KEY or not TREBLLE_SDK_TOKEN:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                TREBLLE_API_URL,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": TREBLLE_API_KEY,
+                },
+                timeout=10.0
+            )
+    except Exception:
+        pass  # Silently fail - don't affect API response
+
+@app.middleware("http")
+async def treblle_middleware(request: Request, call_next):
+    """Capture request/response data and send to Treblle"""
+    if not TREBLLE_API_KEY or not TREBLLE_SDK_TOKEN:
+        return await call_next(request)
+
+    # Skip analytics endpoints
+    if request.url.path.startswith("/analytics"):
+        return await call_next(request)
+
+    start_time = datetime.now()
+
+    # Capture request body
+    request_body = None
+    try:
+        body_bytes = await request.body()
+        if body_bytes:
+            request_body = json.loads(body_bytes.decode())
+    except:
+        request_body = None
+
+    # Process request
+    response = await call_next(request)
+
+    # Calculate duration
+    duration = (datetime.now() - start_time).total_seconds()
+
+    # Capture response body
+    response_body = None
+    response_body_bytes = b""
+    async for chunk in response.body_iterator:
+        response_body_bytes += chunk
+    try:
+        response_body = json.loads(response_body_bytes.decode())
+    except:
+        response_body = None
+
+    # Rebuild response with captured body
+    from starlette.responses import Response
+    new_response = Response(
+        content=response_body_bytes,
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=response.media_type
+    )
+
+    # Build Treblle payload
+    treblle_payload = {
+        "api_key": TREBLLE_API_KEY,
+        "project_id": TREBLLE_SDK_TOKEN,
+        "version": 0.6,
+        "sdk": "python-fastapi-custom",
+        "data": {
+            "server": {
+                "ip": "127.0.0.1",
+                "timezone": "UTC",
+                "software": "uvicorn",
+                "protocol": request.url.scheme,
+            },
+            "language": {
+                "name": "python",
+                "version": "3.10"
+            },
+            "request": {
+                "timestamp": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                "ip": get_remote_address(request),
+                "url": str(request.url),
+                "user_agent": request.headers.get("user-agent", ""),
+                "method": request.method,
+                "headers": dict(request.headers),
+                "body": request_body
+            },
+            "response": {
+                "headers": dict(new_response.headers),
+                "code": new_response.status_code,
+                "size": len(response_body_bytes),
+                "load_time": duration,
+                "body": response_body
+            }
+        }
+    }
+
+    # Send to Treblle in background (don't wait)
+    asyncio.create_task(send_to_treblle(treblle_payload))
+
+    return new_response
 
 
 # Data storage (loaded from JSON files)
@@ -689,6 +819,9 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
     os_data = sorted(analytics["os"].items(), key=lambda x: x[1], reverse=True)
     referers = sorted(analytics["referers"].items(), key=lambda x: x[1], reverse=True)[:10]
 
+    # Get user journeys data (for all tracked IPs)
+    user_journeys_json = json.dumps(dict(analytics["user_journeys"]))
+
     # Prepare all data for charts
     daily_labels = json.dumps([d[0] for d in daily])
     daily_data = json.dumps([d[1] for d in daily])
@@ -1004,11 +1137,52 @@ async def get_analytics(request: Request, secret: str = Query(..., description="
                     </tbody>
                 </table>
             </div>
+
+            <div class="table-container" style="grid-column: 1 / -1;">
+                <h3 class="section-title">🔍 User Journeys (by IP)</h3>
+                <div style="margin-bottom: 15px;">
+                    <label style="color: #aaa;">Select IP: </label>
+                    <select id="journeyIpSelect" onchange="showJourney()" style="background: #1e1e2e; color: #fff; border: 1px solid #333; padding: 8px 12px; border-radius: 5px; min-width: 200px;">
+                        <option value="">-- Select an IP --</option>
+                        {"".join(f'<option value="{ip}">{ip} ({count} requests)</option>' for ip, count in top_ips)}
+                    </select>
+                </div>
+                <div id="journeyContainer" style="max-height: 400px; overflow-y: auto;">
+                    <p style="color: #666;">Select an IP address to view their journey</p>
+                </div>
+            </div>
         </div>
 
         <script>
             const colors = ['#00d4ff', '#7b2cbf', '#ff6b6b', '#4ecdc4', '#45b7d1', '#96c93d', '#f9ca24', '#f0932b', '#eb4d4b', '#6c5ce7'];
             const allDatasets = {all_datasets};
+            const userJourneys = {user_journeys_json};
+
+            function showJourney() {{
+                const ip = document.getElementById('journeyIpSelect').value;
+                const container = document.getElementById('journeyContainer');
+
+                if (!ip || !userJourneys[ip] || userJourneys[ip].length === 0) {{
+                    container.innerHTML = '<p style="color: #666;">No journey data available for this IP</p>';
+                    return;
+                }}
+
+                const journey = userJourneys[ip];
+                let html = '<table style="width: 100%;"><thead><tr><th>Time</th><th>Method</th><th>Endpoint</th><th>Referer</th></tr></thead><tbody>';
+
+                journey.slice().reverse().forEach((entry, i) => {{
+                    const rowColor = i % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'transparent';
+                    html += `<tr style="background: ${{rowColor}}">
+                        <td style="white-space: nowrap; color: #888;">${{entry.timestamp}}</td>
+                        <td><span style="background: #7b2cbf; padding: 2px 8px; border-radius: 3px; font-size: 11px;">${{entry.method}}</span></td>
+                        <td style="color: #00d4ff;">${{entry.endpoint}}</td>
+                        <td style="color: #666; font-size: 12px;">${{entry.referer || 'Direct'}}</td>
+                    </tr>`;
+                }});
+
+                html += '</tbody></table>';
+                container.innerHTML = html;
+            }}
 
             const chartData = {{
                 daily: {{ labels: {daily_labels}, data: {daily_data} }},
