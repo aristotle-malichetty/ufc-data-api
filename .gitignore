@@ -37,3 +37,9 @@ sample_data_structure.json
 
 # Analytics data (contains IP addresses)
 analytics.json
+
+# HAR files (HTTP Archive - may contain sensitive data)
+*.har
+
+# ESPN Exploration
+espn_exploration/

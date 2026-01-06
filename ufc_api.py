@@ -34,10 +34,6 @@ RATE_LIMIT = "100/day;100/minute"
 # Analytics secret key (loaded from .env file)
 ANALYTICS_SECRET = os.getenv("ANALYTICS_SECRET")
 
-# Treblle configuration
-TREBLLE_API_KEY = os.getenv("TREBLLE_API_KEY")
-TREBLLE_SDK_TOKEN = os.getenv("TREBLLE_SDK_TOKEN")
-TREBLLE_API_URL = "https://rocknrolla.treblle.com"
 
 # Cache settings (5 minute TTL, max 1000 items)
 cache = TTLCache(maxsize=1000, ttl=300)
@@ -282,113 +278,6 @@ async def analytics_middleware(request: Request, call_next):
         track_request(request)
     response = await call_next(request)
     return response
-
-
-# Treblle middleware - sends API analytics to Treblle
-async def send_to_treblle(payload: dict):
-    """Send request data to Treblle in the background"""
-    if not TREBLLE_API_KEY or not TREBLLE_SDK_TOKEN:
-        return
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                TREBLLE_API_URL,
-                json=payload,
-                headers={
-                    "Content-Type": "application/json",
-                    "x-api-key": TREBLLE_API_KEY,
-                },
-                timeout=10.0
-            )
-    except Exception:
-        pass  # Silently fail - don't affect API response
-
-@app.middleware("http")
-async def treblle_middleware(request: Request, call_next):
-    """Capture request/response data and send to Treblle"""
-    if not TREBLLE_API_KEY or not TREBLLE_SDK_TOKEN:
-        return await call_next(request)
-
-    # Skip analytics endpoints
-    if request.url.path.startswith("/analytics"):
-        return await call_next(request)
-
-    start_time = datetime.now()
-
-    # Capture request body
-    request_body = None
-    try:
-        body_bytes = await request.body()
-        if body_bytes:
-            request_body = json.loads(body_bytes.decode())
-    except:
-        request_body = None
-
-    # Process request
-    response = await call_next(request)
-
-    # Calculate duration
-    duration = (datetime.now() - start_time).total_seconds()
-
-    # Capture response body
-    response_body = None
-    response_body_bytes = b""
-    async for chunk in response.body_iterator:
-        response_body_bytes += chunk
-    try:
-        response_body = json.loads(response_body_bytes.decode())
-    except:
-        response_body = None
-
-    # Rebuild response with captured body
-    from starlette.responses import Response
-    new_response = Response(
-        content=response_body_bytes,
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        media_type=response.media_type
-    )
-
-    # Build Treblle payload
-    treblle_payload = {
-        "api_key": TREBLLE_API_KEY,
-        "project_id": TREBLLE_SDK_TOKEN,
-        "version": 0.6,
-        "sdk": "python-fastapi-custom",
-        "data": {
-            "server": {
-                "ip": "127.0.0.1",
-                "timezone": "UTC",
-                "software": "uvicorn",
-                "protocol": request.url.scheme,
-            },
-            "language": {
-                "name": "python",
-                "version": "3.10"
-            },
-            "request": {
-                "timestamp": start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                "ip": get_remote_address(request),
-                "url": str(request.url),
-                "user_agent": request.headers.get("user-agent", ""),
-                "method": request.method,
-                "headers": dict(request.headers),
-                "body": request_body
-            },
-            "response": {
-                "headers": dict(new_response.headers),
-                "code": new_response.status_code,
-                "size": len(response_body_bytes),
-                "load_time": duration,
-                "body": response_body
-            }
-        }
-    }
-
-    # Send to Treblle in background (don't wait)
-    asyncio.create_task(send_to_treblle(treblle_payload))
-
-    return new_response
 
 
 # Data storage (loaded from JSON files)
