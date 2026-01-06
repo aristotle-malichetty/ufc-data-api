@@ -14,11 +14,15 @@ from cachetools import TTLCache
 from dotenv import load_dotenv
 from typing import Optional
 from collections import defaultdict
+from contextvars import ContextVar
 import json
 import os
 import httpx
 import asyncio
 from datetime import datetime, date
+
+# Context variable to store current request for rate limit exemption check
+_current_request: ContextVar[Request] = ContextVar('current_request')
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,6 +37,19 @@ RATE_LIMIT = "100/day;100/minute"
 
 # Analytics secret key (loaded from .env file)
 ANALYTICS_SECRET = os.getenv("ANALYTICS_SECRET")
+
+# Admin API key for unlimited access (loaded from .env file)
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+
+
+def is_admin_request() -> bool:
+    """Check if current request has valid admin API key (exempt from rate limits)"""
+    try:
+        request = _current_request.get()
+        api_key = request.headers.get("X-API-Key")
+        return bool(ADMIN_API_KEY and api_key == ADMIN_API_KEY)
+    except LookupError:
+        return False
 
 
 # Cache settings (5 minute TTL, max 1000 items)
@@ -270,6 +287,17 @@ app.add_middleware(
 )
 
 
+# Request context middleware (for rate limit exemption check)
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    token = _current_request.set(request)
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        _current_request.reset(token)
+
+
 # Analytics middleware
 @app.middleware("http")
 async def analytics_middleware(request: Request, call_next):
@@ -326,10 +354,10 @@ async def startup():
 # =============================================================================
 
 @app.get("/api/fighters", tags=["Fighters"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def list_fighters(
     request: Request,
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(50, ge=1),
     offset: int = Query(0, ge=0),
     weight_class: Optional[str] = None,
     search: Optional[str] = None,
@@ -340,7 +368,11 @@ async def list_fighters(
     """
     List all fighters with optional filtering and pagination.
     Results are cached for 5 minutes.
+    Free users: max 500. Admin API key: unlimited.
     """
+    # Enforce limit for non-admin users
+    if not is_admin_request() and limit > 500:
+        limit = 500
     # Check cache
     cache_key = f"fighters:{limit}:{offset}:{search}:{min_wins}:{stance}:{sort_by}"
     cached = get_cached(cache_key)
@@ -384,7 +416,7 @@ async def list_fighters(
 
 # NOTE: /compare must come BEFORE /{fighter_id} to avoid route conflicts
 @app.get("/api/fighters/compare", tags=["Fighters"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def compare_fighters(
     request: Request,
     fighter1: str = Query(..., description="First fighter ID"),
@@ -461,7 +493,7 @@ async def compare_fighters(
 
 # Dynamic routes must come AFTER /compare
 @app.get("/api/fighters/{fighter_id}", tags=["Fighters"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def get_fighter(request: Request, fighter_id: str):
     """Get detailed information for a specific fighter. Cached for 5 minutes."""
     cache_key = f"fighter:{fighter_id}"
@@ -476,7 +508,7 @@ async def get_fighter(request: Request, fighter_id: str):
 
 
 @app.get("/api/fighters/{fighter_id}/stats", tags=["Fighters"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def get_fighter_stats(request: Request, fighter_id: str):
     """Get career statistics for a fighter. Rate limit: 100 requests/minute per IP."""
     fighter = FIGHTERS_BY_ID.get(fighter_id)
@@ -518,7 +550,7 @@ async def get_fighter_stats(request: Request, fighter_id: str):
 # =============================================================================
 
 @app.get("/api/events", tags=["Events"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def list_events(
     request: Request,
     limit: int = Query(50, ge=1, le=200),
@@ -547,7 +579,7 @@ async def list_events(
 
 
 @app.get("/api/events/{event_id}", tags=["Events"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def get_event(request: Request, event_id: str):
     """Get detailed information for a specific event. Rate limit: 100 requests/minute per IP."""
     event = EVENTS_BY_ID.get(event_id)
@@ -561,7 +593,7 @@ async def get_event(request: Request, event_id: str):
 # =============================================================================
 
 @app.get("/api/fights", tags=["Fights"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def list_fights(
     request: Request,
     limit: int = Query(50, ge=1, le=200),
@@ -599,7 +631,7 @@ async def list_fights(
 
 
 @app.get("/api/fights/{fight_id}", tags=["Fights"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def get_fight(request: Request, fight_id: str):
     """Get detailed round-by-round stats for a specific fight. Rate limit: 100 requests/minute per IP."""
     fight = FIGHTS_BY_ID.get(fight_id)
@@ -613,7 +645,7 @@ async def get_fight(request: Request, fight_id: str):
 # =============================================================================
 
 @app.get("/api/stats/leaders", tags=["Stats"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def stat_leaders(
     request: Request,
     stat: str = Query("slpm", description="Stat to rank by: slpm, str_acc, td_avg, td_acc, sub_avg, wins"),
@@ -655,7 +687,7 @@ async def stat_leaders(
 
 
 @app.get("/api/stats/overview", tags=["Stats"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def stats_overview(request: Request):
     """Get overview statistics about the database. Cached for 5 minutes."""
     cache_key = "stats:overview"
@@ -1472,7 +1504,7 @@ async def get_analytics_json(request: Request, secret: str = Query(..., descript
 # =============================================================================
 
 @app.get("/health", tags=["System"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def health_check(request: Request):
     return {
         "status": "healthy",
@@ -1484,7 +1516,7 @@ async def health_check(request: Request):
 
 
 @app.get("/", tags=["System"])
-@limiter.limit(RATE_LIMIT)
+@limiter.limit(RATE_LIMIT, exempt_when=is_admin_request)
 async def root(request: Request):
     return {
         "message": "UFC Stats API",
