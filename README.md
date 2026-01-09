@@ -2,6 +2,8 @@
 
 A free REST API for UFC fighter stats, events, and fight data.
 
+![API Documentation](docs/UFC_Stats_API_Swagger_UI.png)
+
 **Live API:** https://ufcapi.aristotle.me
 
 **Docs:** https://ufcapi.aristotle.me/docs
